@@ -472,16 +472,6 @@ static void jmp() {
 }
 
 static void jsr() {
-
- /*   uint16_t target = ea;
-    if (target == 0xFFD2) {
-      // the Plus-4 is about to print the byte in 'a'
-      putchar((char)a);
-      // pretend the subroutine returned immediately
-      return;
-    }
-*/
-
     push16(pc - 1);
     pc = ea;
 }
