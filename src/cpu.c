@@ -111,9 +111,7 @@ void reset6502() {
     y = 0;
     sp = 0xFF;
     status = FLAG_CONSTANT | FLAG_INTERRUPT;
-    irq_triggered = 0;
-
-    
+    irq_triggered = 0;    
 }
 
 
