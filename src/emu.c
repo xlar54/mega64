@@ -5,7 +5,7 @@
 
 #include "emu.h"
 #include "m65.h"
-#include "cpu.c"
+#include "cpu2.c"
 
 #define BANK_1_RAM              0x10000
 #define ATTIC_RAM               0x08000000
@@ -393,7 +393,7 @@ int main() {
 
     while(running) {
         
-        if(show_regs == 1) dump_regs();
+        if(show_regs == 1) { dump_regs(); getchar(); }
         
         step6502();
         keyboard_handler();
