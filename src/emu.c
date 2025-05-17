@@ -7,8 +7,11 @@
 #include "m65.h"
 #include "cpu.c"
 
-#define BANK_1_RAM              0x10000
-#define ATTIC_RAM               0x08000000
+#define FASTBOOT
+
+#define BANK_4_ROM              0x40000
+#define BANK_5_RAM              0x50000
+
 #define CPU_HZ                  985248u   
 #define IRQ_RATE                50u
 #define VIC_RASTER_LINES        312u     // PAL C-64 has 312 visible lines per frame
@@ -18,7 +21,7 @@
 static const uint32_t cycles_per_irq = CPU_HZ / IRQ_RATE;
 static uint32_t cycle_acc       = 0;
 static uint32_t frame_ticks     = 0;
-static uint8_t raster_line      = 0;
+static uint16_t raster_line     = 0;
 
 
 // CIA 1 Timer A state
@@ -33,18 +36,16 @@ static uint8_t cia1_crb         = 0;    // $DC0F control register B
 static uint16_t cia2_timer;
 static uint8_t  cia2_talo, cia2_tahi, cia2_ctrl, cia2_ifr;
 
-uint8_t running = 1;
 uint8_t __huge *m65io   = (uint8_t __huge *)0x0ffd3000;
-uint8_t __huge *ram     = (uint8_t __huge *)BANK_1_RAM;
-uint8_t __huge *rom     = (uint8_t __huge *)ATTIC_RAM;
-
-uint8_t __huge *basic   = (uint8_t __huge *)ATTIC_RAM + 0xa000;  // BASIC at $a000-$bfff
-uint8_t __huge *freeram = (uint8_t __huge *)ATTIC_RAM + 0xc000;  // ram mapping for monitor
-uint8_t __huge *chars   = (uint8_t __huge *)ATTIC_RAM + 0xd000;  // KERNAL at $d000–$dFFF
-uint8_t __huge *kernal  = (uint8_t __huge *)ATTIC_RAM + 0xe000;  // KERNAL at $e000–$FFFF
+uint8_t __huge *ram     = (uint8_t __huge *)BANK_5_RAM;
+uint8_t __huge *rom     = (uint8_t __huge *)BANK_4_ROM;
+uint8_t __huge *basic   = (uint8_t __huge *)BANK_4_ROM + 0xa000;  // BASIC at $a000-$bfff
+uint8_t __huge *chars   = (uint8_t __huge *)BANK_4_ROM + 0xd000;  // KERNAL at $d000–$dFFF
+uint8_t __huge *kernal  = (uint8_t __huge *)BANK_4_ROM + 0xe000;  // KERNAL at $e000–$FFFF
 
 static uint8_t raster = 0;
 
+void keyboard_handler();
 
 void dump_regs(void) {
     fputs("PC:", stdout); print_hex16(pc);  fputc(' ', stdout);
@@ -52,15 +53,15 @@ void dump_regs(void) {
     fputs("A:",  stdout); print_hex8(a);     fputc(' ', stdout);
     fputs("X:",  stdout); print_hex8(x);     fputc(' ', stdout);
     fputs("Y:",  stdout); print_hex8(y);     fputc(' ', stdout);
-    fputs("P:",  stdout);
-    putchar((status & FLAG_SIGN)      ? 'N' : 'n');
+    fputs("P:",  stdout); print_hex8(status); fputc(' ', stdout);
+    /*putchar((status & FLAG_SIGN)      ? 'N' : 'n');
     putchar((status & FLAG_OVERFLOW)  ? 'V' : 'v');
-    putchar('-');  /* unused bit */
+    putchar('-'); 
     putchar((status & FLAG_BREAK)     ? 'B' : 'b');
     putchar((status & FLAG_DECIMAL)   ? 'D' : 'd');
     putchar((status & FLAG_INTERRUPT) ? 'I' : 'i');
     putchar((status & FLAG_ZERO)      ? 'Z' : 'z');
-    putchar((status & FLAG_CARRY)     ? 'C' : 'c');
+    putchar((status & FLAG_CARRY)     ? 'C' : 'c');*/
     putchar('\r');
 }
 
@@ -124,11 +125,7 @@ uint8_t read6502(uint16_t address) {
         }
 
         if (address == 0xDC0D) {
-            // reading the IFR clears it and returns current value
-            uint8_t v = cia1_ifr | 0x80;  // Add bit 7 set to indicate IRQ source
-            cia1_ifr = 0;
-            irq_triggered = 0;
-            return v;
+            return 0x80 | (cia1_ifr & 0x7F);
         }
 
         if (address == 0xDC0E) {
@@ -181,8 +178,10 @@ void write6502(uint16_t address, uint8_t value) {
             switch (address) {
                 case 0xD012:
                     // raster register is read-only
+                    ram[0xD012] = value;
                     return;
                 case 0xD019:
+                    ram[0xD019] = value;   // allow the KERNAL to clear the flag
                     return;
                 case 0xD01A:
                     // IRQ mask register
@@ -223,21 +222,28 @@ void write6502(uint16_t address, uint8_t value) {
             }
 
             if (address == 0xDC0D) {
-                // CIA1 Interrupt control register - acknowledge interrupts
                 if (value & 0x80) {
                     // Set interrupts
                     cia1_icr_mask |= (value & 0x7F);
                 } else {
-                    // Clear interrupts
+                    // Clear (ack) interrupts, re-enable firing
                     cia1_icr_mask   &= ~(value & 0x7F);
-                    cia1_ifr        &= ~(value & 0x7F); // clear flags acknowleged
-                    irq_triggered   = 0;
+                    cia1_ifr        &= ~(value & 0x7F);
+                    irq_triggered    = 0;      // ← un-gate further IRQs
                 }
                 ram[address] = value;
                 return;
             }
 
             if (address == 0xDC0E) {
+
+                if (value & 0x80) {
+                    cia1_icr_mask |=  (value & 0x7F);
+                  } else {
+                    cia1_icr_mask &= ~(value & 0x7F);
+                  }
+
+                // START (or stop) Timer A when bit 0 transitions
                 if ((value & 0x01) && !(cia1_ctrl & 0x01)) {
                     // Starting timer - load from latch
                     cia1_timer = ((uint16_t)cia1_tahi << 8) | cia1_talo;
@@ -267,7 +273,6 @@ void write6502(uint16_t address, uint8_t value) {
 
 
 void tick_50hz(void) {
-    uint8_t port = ram[0x0001];
 
     // ── 1) VIC raster ────────────────────────────────────────────
     cycle_acc += ticktable[opcode];
@@ -282,7 +287,6 @@ void tick_50hz(void) {
         
         if (raster_line == compare_line) {
             ram[0xD019] |= 0x01;  // Set VIC raster interrupt flag
-            irq_triggered = 1;
         }
     }
 
@@ -318,7 +322,7 @@ void tick_50hz(void) {
         uint8_t do_irq = 0;
 
         // CIA-1 Timer B (jiffy clock)
-        if ((cia1_ifr & 0x02) && (cia1_icr_mask & 0x02)) {
+        if ((cia1_ifr & cia1_icr_mask & 0x02) != 0) {
             do_irq = 1;
         }       
         // CIA-1 Timer A - check if both flag and control are set
@@ -333,15 +337,30 @@ void tick_50hz(void) {
         if (do_irq == 1) {
             irq_triggered = 1;
             irq6502();
+            
+            // clear the source flag so you don’t immediately fire again:
+            if      (cia1_ifr & cia1_icr_mask & 0x01) cia1_ifr &= ~0x01;
+            else if (ram[0xD019] & ram[0xD01A] & 0x01) ram[0xD019] &= ~0x01;
+            else if (cia1_ifr & cia1_icr_mask & 0x02) cia1_ifr &= ~0x02;
         }
     }
 }
 
-// Initialize C64 RAM with proper startup values
+// Initialize emulator
 void init(void) {
 
+    POKE(0xD020, 0);  // Set border color to black
+    POKE(0xD021, 0);  // Set background color to black
+
+    putchar(0x93);     // Clear screen
+    putchar(0x98);     // white text
+    putchar(0X1B);     // esc-x - 40 col screen
+    putchar(0x58);
+
     // Clear RAM
-    lfill(0x10000, 0x00, 65535);
+#ifndef FASTBOOT
+    lfill(0x50000, 0x00, 65535);
+#endif
 
     // Setup RAM with proper startup values
     ram[0x00] = 0xFF; 
@@ -350,15 +369,43 @@ void init(void) {
     POKE(0xD020, 14);  // Light blue border
     POKE(0xD021, 6);   // Blue background
 
-    cia1_ifr = 0;
-    cia1_icr_mask = 0;
-    cia1_ctrl = 0;
-    cia1_ifr = 0;
-    cia1_timer = 0;
+    #ifndef FASTBOOT
+        reset6502();
 
-    // copy monitor if it exists
-    for(int t=0xc000; t<=0xcfff; t++)
-        write6502(t, freeram[t-0xc000]);
+        cia1_ifr = 0;
+        cia1_icr_mask = 0;
+        cia1_ctrl = 0;
+        cia1_ifr = 0;
+        cia1_timer = 0;
+    #else
+        
+        reset6502_fast();
+    
+        cia1_talo = 37;
+        cia1_tahi = 64;
+        cia1_timer = 1968;
+        cia1_ifr   = 0;
+        cia1_crb = 8;
+        cia1_ctrl = 17;
+    #endif
+    
+    // allow CPU to execute startup code without irq interference
+    while (status & FLAG_INTERRUPT) {
+        step6502();
+    }
+
+    // — enable VIC raster interrupts —
+    write6502(0xD01A, PEEK(0xD01A) | 0x01);
+
+    // also want CIA-1 Timer A/B IRQs:
+    write6502(0xDC0D, 0x81);  // set mask bit 0 ⇒ Timer A
+    write6502(0xDC0D, 0x82);  // set mask bit 1 ⇒ Timer B
+
+    // Now START Timer A so cursor‐blink IRQs can happen:
+    write6502(0xDC0E, 0x81);    // bit7|bit0 ⇒ mask A and start A
+
+    irq_triggered = 0;
+    hookexternal(tick_50hz);
 }
 
 void keyboard_handler() {
@@ -378,27 +425,19 @@ int main() {
     uint8_t show_regs = 0;
     uint8_t do_step = 0;
 
-    POKE(0xD020, 0);  // Set border color to black
-    POKE(0xD021, 0);  // Set background color to black
-
-    putchar(0x93);     // Clear screen
-    putchar(0x98);     // white text
-    putchar(0X1B);     // esc-x - 40 col screen
-    putchar(0x58);
-
     init();
-    reset6502();
 
-    hookexternal(tick_50hz);
-
-    while(running) {
+    while(1) {
         
-        if(show_regs == 1) dump_regs();
+        if(show_regs == 1) 
+            dump_regs();
+        
+        if(do_step == 1) 
+            getchar();
         
         step6502();
         keyboard_handler();
-       
-        if(do_step == 1) getchar();
+
     }
 
     return 0;

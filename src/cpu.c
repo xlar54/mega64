@@ -83,24 +83,24 @@ uint16_t oldpc, ea, reladdr, value, result;
 uint8_t opcode, oldstatus;
 
 //a few general functions used by various other functions
-void push16(uint16_t pushval) {
+static inline void push16(uint16_t pushval) {
     write6502(BASE_STACK + sp, (pushval >> 8) & 0xFF);
     write6502(BASE_STACK + ((sp - 1) & 0xFF), pushval & 0xFF);
     sp -= 2;
 }
 
-void push8(uint8_t pushval) {
+static inline void push8(uint8_t pushval) {
     write6502(BASE_STACK + sp--, pushval);
 }
 
-uint16_t pull16() {
+static inline uint16_t pull16() {
     uint16_t temp16;
     temp16 = read6502(BASE_STACK + ((sp + 1) & 0xFF)) | ((uint16_t)read6502(BASE_STACK + ((sp + 2) & 0xFF)) << 8);
     sp += 2;
     return(temp16);
 }
 
-uint8_t pull8() {
+static inline uint8_t pull8() {
     return (read6502(BASE_STACK + ++sp));
 }
 
@@ -112,8 +112,16 @@ void reset6502() {
     sp = 0xFF;
     status = FLAG_CONSTANT | FLAG_INTERRUPT;
     irq_triggered = 0;
+}
 
-    
+void reset6502_fast() {
+    pc = (uint16_t)read6502(0xa000) | ((uint16_t)read6502(0xa001) << 8);
+    a = 0x97;
+    x = 0x01;
+    y = 0x84;
+    sp = 0xFF;
+    status = 0x21;
+    irq_triggered = 0;
 }
 
 
@@ -122,39 +130,39 @@ static void (*optable[256])();
 uint8_t penaltyop, penaltyaddr;
 
 //addressing mode functions, calculates effective addresses
-static void imp() { //implied
+static inline void imp() { //implied
 }
 
-static void acc() { //accumulator
+static inline void acc() { //accumulator
 }
 
-static void imm() { //immediate
+static inline void imm() { //immediate
     ea = pc++;
 }
 
-static void zp() { //zero-page
+static inline void zp() { //zero-page
     ea = (uint16_t)read6502((uint16_t)pc++);
 }
 
-static void zpx() { //zero-page,X
+static inline void zpx() { //zero-page,X
     ea = ((uint16_t)read6502((uint16_t)pc++) + (uint16_t)x) & 0xFF; //zero-page wraparound
 }
 
-static void zpy() { //zero-page,Y
+static inline void zpy() { //zero-page,Y
     ea = ((uint16_t)read6502((uint16_t)pc++) + (uint16_t)y) & 0xFF; //zero-page wraparound
 }
 
-static void rel() { //relative for branch ops (8-bit immediate value, sign-extended)
+static inline void rel() { //relative for branch ops (8-bit immediate value, sign-extended)
     reladdr = (uint16_t)read6502(pc++);
     if (reladdr & 0x80) reladdr |= 0xFF00;
 }
 
-static void abso() { //absolute
+static inline void abso() { //absolute
     ea = (uint16_t)read6502(pc) | ((uint16_t)read6502(pc+1) << 8);
     pc += 2;
 }
 
-static void absx() { //absolute,X
+static inline void absx() { //absolute,X
     uint16_t startpage;
     ea = ((uint16_t)read6502(pc) | ((uint16_t)read6502(pc+1) << 8));
     startpage = ea & 0xFF00;
@@ -167,7 +175,7 @@ static void absx() { //absolute,X
     pc += 2;
 }
 
-static void absy() { //absolute,Y
+static inline void absy() { //absolute,Y
     uint16_t startpage;
     ea = ((uint16_t)read6502(pc) | ((uint16_t)read6502(pc+1) << 8));
     startpage = ea & 0xFF00;
@@ -180,7 +188,7 @@ static void absy() { //absolute,Y
     pc += 2;
 }
 
-static void ind() { //indirect
+static inline void ind() { //indirect
     uint16_t eahelp, eahelp2;
     eahelp = (uint16_t)read6502(pc) | (uint16_t)((uint16_t)read6502(pc+1) << 8);
     eahelp2 = (eahelp & 0xFF00) | ((eahelp + 1) & 0x00FF); //replicate 6502 page-boundary wraparound bug
@@ -188,13 +196,13 @@ static void ind() { //indirect
     pc += 2;
 }
 
-static void indx() { // (indirect,X)
+static inline void indx() { // (indirect,X)
     uint16_t eahelp;
     eahelp = (uint16_t)(((uint16_t)read6502(pc++) + (uint16_t)x) & 0xFF); //zero-page wraparound for table pointer
     ea = (uint16_t)read6502(eahelp & 0x00FF) | ((uint16_t)read6502((eahelp+1) & 0x00FF) << 8);
 }
 
-static void indy() { // (indirect),Y
+static inline void indy() { // (indirect),Y
     uint16_t eahelp, eahelp2, startpage;
     eahelp = (uint16_t)read6502(pc++);
     eahelp2 = (eahelp & 0xFF00) | ((eahelp + 1) & 0x00FF); //zero-page wraparound
@@ -207,12 +215,12 @@ static void indy() { // (indirect),Y
     }
 }
 
-static uint16_t getvalue() {
+static inline uint16_t getvalue() {
     if (addrtable[opcode] == acc) return((uint16_t)a);
         else return((uint16_t)read6502(ea));
 }
 
-static void putvalue(uint16_t saveval) {
+static inline void putvalue(uint16_t saveval) {
     if (addrtable[opcode] == acc) a = (uint8_t)(saveval & 0x00FF);
         else write6502(ea, (saveval & 0x00FF));
 }
